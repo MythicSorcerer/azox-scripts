@@ -1,0 +1,9 @@
+# One EssentialsX Maven artifact per line.
+# These are checked against EssentialsX snapshots.
+EssentialsX
+EssentialsXChat
+EssentialsXSpawn
+EssentialsXDiscord
+EssentialsXGeoIP
+EssentialsXProtect
+EssentialsXAntiBuild
