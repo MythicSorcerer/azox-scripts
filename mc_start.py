@@ -15,6 +15,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from crash_repair import CrashRepairEngine
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG = SCRIPT_DIR / "start.env"
@@ -797,10 +798,20 @@ def update_purpur_if_needed(server_dir: Path, jar_name: str, enabled=True):
         return jar_name, False, f"Purpur update failed: {ex}"
 
 
-def start_server_loop(server_dir: Path, jar_name: str, ram_min: str, ram_max: str, auto_restart: bool):
-    jar = server_dir / jar_name
-    if not jar.exists():
-        raise FileNotFoundError(f"Jar not found: {jar}")
+def start_server_loop(
+    server_dir: Path,
+    script_dir: Path,
+    config_path: Path,
+    jar_name: str,
+    ram_min: str,
+    ram_max: str,
+    auto_restart: bool,
+    port: int,
+    java_bin: str,
+    extra_jvm_flags: str,
+    crash_repair_enabled: bool,
+    crash_repair_max: int,
+):
 
     def restart_countdown(seconds):
         log("Auto restart is enabled")
@@ -813,23 +824,50 @@ def start_server_loop(server_dir: Path, jar_name: str, ram_min: str, ram_max: st
         sys.stdout.write("\n")
         sys.stdout.flush()
 
+    engine = CrashRepairEngine(
+        server_dir=server_dir,
+        script_dir=script_dir,
+        config_path=config_path,
+        jar_name=jar_name,
+        port=port,
+        ram_min=ram_min,
+        ram_max=ram_max,
+        java_bin=java_bin,
+        extra_jvm_flags=extra_jvm_flags,
+        max_crashes=crash_repair_max,
+        log=log,
+        warn=warn,
+        err=err,
+    )
+
     while True:
-        cmd = [
-            "java",
-            f"-Xms{ram_min}",
-            f"-Xmx{ram_max}",
-            "-jar",
-            jar.name,
-            "--nogui",
-        ]
-        proc = subprocess.Popen(cmd, cwd=str(server_dir))
-        code = proc.wait()
+        jar = server_dir / engine.jar_name
+        if not jar.exists():
+            raise FileNotFoundError(f"Jar not found: {jar}")
+
+        result = engine.run_once()
+        code = result["exit_code"]
+        started = result["started"]
+
+        if started:
+            engine.reset_crash_state()
+
         if code == 0:
             log("Minecraft exited cleanly.")
             if auto_restart:
                 restart_countdown(5)
                 continue
             break
+
+        if not started and crash_repair_enabled:
+            repaired, crash_type, message = engine.process_crash(result)
+            if repaired:
+                log(f"Crash detected [{crash_type}] -> repair applied: {message}")
+                restart_countdown(5)
+                continue
+            err(f"Crash repair failed [{crash_type}]: {message}")
+            break
+
         err(f"Minecraft exited with code {code}.")
         if auto_restart:
             restart_countdown(5)
@@ -859,6 +897,10 @@ def main():
     remove_locks = bool_env(cfg, "REMOVE_LOCKS", True)
     purge_old_enabled = bool_env(cfg, "PURGE_OLD_FILES", True)
     offline_mode = bool_env(cfg, "OFFLINE_MODE", True)
+    crash_repair_enabled = bool_env(cfg, "CRASH_REPAIR", True)
+    crash_repair_max = int_env(cfg, "CRASH_REPAIR_MAX", 6)
+    java_bin = cfg.get("JAVA_BIN", "java")
+    extra_jvm_flags = cfg.get("EXTRA_JVM_FLAGS", "")
     no_run = args.no_run or bool_env(cfg, "NO_RUN", False)
     boot_motd = cfg.get("BOOT_MOTD", "Server is starting, please wait...")
     boot_timeout = int_env(cfg, "BOOT_MOTD_TIMEOUT", 300)
@@ -983,7 +1025,20 @@ def main():
     signal.signal(signal.SIGINT, handle_sig)
 
     try:
-        start_server_loop(server_dir, jar_name, ram_min, ram_max, auto_restart)
+        start_server_loop(
+            server_dir=server_dir,
+            script_dir=SCRIPT_DIR,
+            config_path=config_path,
+            jar_name=jar_name,
+            ram_min=ram_min,
+            ram_max=ram_max,
+            auto_restart=auto_restart,
+            port=port,
+            java_bin=java_bin,
+            extra_jvm_flags=extra_jvm_flags,
+            crash_repair_enabled=crash_repair_enabled,
+            crash_repair_max=crash_repair_max,
+        )
     except FileNotFoundError as ex:
         err(str(ex))
         return 4

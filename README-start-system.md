@@ -34,6 +34,10 @@ Config toggles:
 - `ENABLE_EULA=true|false`
 - `PURGE_OLD_FILES=true|false`
 - `OFFLINE_MODE=true|false` (forces `online-mode=false` and `enforce-secure-profile=false` in `server.properties`)
+- `CRASH_REPAIR=true|false` (enable startup crash classification + auto-repair loop)
+- `CRASH_REPAIR_MAX=6` (max repair attempts before give-up)
+- `JAVA_BIN` (java executable for launch, auto-switched on Java version mismatch)
+- `EXTRA_JVM_FLAGS` (optional extra JVM args, auto-reset on invalid-flag crash)
 - `NO_RUN=true|false` (same effect as `--no-run`)
 - `JAR_FILE`
 
@@ -53,3 +57,9 @@ Expected:
 - Exempt values can be full globs (`Geyser-*.jar`) or base names (`azox-chat-watch`), which match versioned jars like `azox-chat-watch-1.0.0.jar`.
 - Cleanup keeps plugins that match: exempt list, resolved Modrinth list, or EssentialsX list.
 - `removed_list.txt` is appended when files are moved or purged.
+
+## Crash Auto-Repair
+- Startup crashes are classified from console output using weighted rules and signature matching.
+- Signature = SHA256 of first 25 log lines; repeated signatures trigger escalation.
+- The system covers: EULA, Java mismatch, bad JVM flags, missing dependency, plugin incompatibility/conflicts, config parse errors, OOM, disk full, port conflict, permission errors, cache corruption, world corruption, datapack failure, modloader mismatch, native library errors, and unknown fallback phases.
+- Unknown fallback phases: cache purge -> disable half plugins -> binary isolation step -> disable all plugins -> redownload Purpur jar -> give up.
