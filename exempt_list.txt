@@ -1,0 +1,5 @@
+# Keep plugins matching these patterns even if they are not in modrinth_list.txt.
+# Comma/newline separated. Supports globs or base names.
+azox-admin-log, azox-broadcast
+azox-bounty, azox-creative-watch
+azox-chat-watch

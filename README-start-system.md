@@ -5,10 +5,10 @@
 - `start.env`: Runtime configuration
 - `mc_start.py`: Main launcher/update/check logic
 - `boot_proxy.py`: Temporary Minecraft status proxy for boot MOTD
-- `modrinth_plugins.json`: Managed Modrinth plugins
-- `fetch-list.txt`: Modrinth plugin names/slugs to resolve with Search API (comma/newline separated)
-- `plugin_allowlist.txt`: Keep these plugin jar patterns even if unmanaged
-- `essentialsx_artifacts.txt`: EssentialsX artifacts to track from snapshots
+- `modrinth_list.txt`: Modrinth plugin names/slugs to resolve via Search API (comma/newline separated)
+- `essentialsx_list.txt`: EssentialsX Maven artifact names (newline separated)
+- `exempt_list.txt`: Plugin names/patterns exempt from removal
+- `removed_list.txt`: Append-only log of moved/purged plugin cleanup actions
 
 ## Run
 ```bash
@@ -33,6 +33,7 @@ Config toggles:
 - `REMOVE_LOCKS=true|false`
 - `ENABLE_EULA=true|false`
 - `PURGE_OLD_FILES=true|false`
+- `OFFLINE_MODE=true|false` (forces `online-mode=false` and `enforce-secure-profile=false` in `server.properties`)
 - `NO_RUN=true|false` (same effect as `--no-run`)
 - `JAR_FILE`
 
@@ -41,30 +42,14 @@ Expected:
 - `/opt/minecraft/mc` contains this script system.
 - `/opt/minecraft/sv` is the server directory (`SERVER_DIR`).
 
-## Modrinth Manifest
-`modrinth_plugins.json` supports:
-```json
-{
-  "plugins": [
-    {
-      "slug": "luckperms",
-      "cleanup_prefix": "LuckPerms-",
-      "filename": "OptionalFixedName.jar"
-    }
-  ]
-}
-```
-
-Notes:
-- `slug` (or `id`) is required.
-- `cleanup_prefix` removes old matching jars after update.
-- `filename` is optional; by default it uses the primary file from Modrinth.
-- Entries in `fetch-list.txt` are also used. Each token is resolved through Modrinth Search API to a plugin slug.
-- `fetch-list.txt` accepts comma-separated and/or newline-separated values.
+## Modrinth List
+- `modrinth_list.txt` accepts comma-separated and/or newline-separated values.
+- Each token is resolved through Modrinth Search API to a server-compatible project slug.
 
 ## Unlisted Plugin Cleanup
 - Script moves unmanaged jars from `plugins/` to `plugins/removed-plugins/`.
 - It purges jars in `removed-plugins` older than `DELETED_MOD_RETENTION_DAYS`.
-- `plugin_allowlist.txt` supports comma/newline-separated values.
-- Allowlist values can be full globs (`Geyser-*.jar`) or base names (`azox-chat-watch`), which match versioned jars like `azox-chat-watch-1.0.0.jar`.
-- Cleanup keeps plugins that match: allowlist, resolved Modrinth fetch list/manifest, or EssentialsX artifacts.
+- `exempt_list.txt` supports comma/newline-separated values.
+- Exempt values can be full globs (`Geyser-*.jar`) or base names (`azox-chat-watch`), which match versioned jars like `azox-chat-watch-1.0.0.jar`.
+- Cleanup keeps plugins that match: exempt list, resolved Modrinth list, or EssentialsX list.
+- `removed_list.txt` is appended when files are moved or purged.

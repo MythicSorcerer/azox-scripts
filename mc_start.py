@@ -18,10 +18,10 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG = SCRIPT_DIR / "start.env"
-MODRINTH_MANIFEST = SCRIPT_DIR / "modrinth_plugins.json"
-FETCH_LIST_FILE = SCRIPT_DIR / "fetch-list.txt"
-ALLOWLIST_FILE = SCRIPT_DIR / "plugin_allowlist.txt"
-ESSENTIALS_ARTIFACTS_FILE = SCRIPT_DIR / "essentialsx_artifacts.txt"
+MODRINTH_LIST_FILE = SCRIPT_DIR / "modrinth_list.txt"
+EXEMPT_LIST_FILE = SCRIPT_DIR / "exempt_list.txt"
+ESSENTIALSX_LIST_FILE = SCRIPT_DIR / "essentialsx_list.txt"
+REMOVED_LIST_FILE = SCRIPT_DIR / "removed_list.txt"
 
 
 class Ansi:
@@ -169,7 +169,7 @@ def port_is_free(port):
         s.close()
 
 
-def update_server_properties(server_dir: Path, port: int):
+def update_server_properties(server_dir: Path, port: int, offline_mode: bool):
     props = server_dir / "server.properties"
     if not props.exists():
         warn("server.properties not found; creating a minimal file.")
@@ -180,6 +180,8 @@ def update_server_properties(server_dir: Path, port: int):
     changed = False
     seen_server_port = False
     seen_query_port = False
+    seen_online_mode = False
+    seen_secure_profile = False
     out = []
     for line in lines:
         if line.startswith("server-port="):
@@ -200,12 +202,36 @@ def update_server_properties(server_dir: Path, port: int):
             else:
                 out.append(line)
             continue
+        if offline_mode and line.startswith("online-mode="):
+            seen_online_mode = True
+            current = line.split("=", 1)[1].strip().lower()
+            if current != "false":
+                out.append("online-mode=false")
+                changed = True
+            else:
+                out.append(line)
+            continue
+        if offline_mode and line.startswith("enforce-secure-profile="):
+            seen_secure_profile = True
+            current = line.split("=", 1)[1].strip().lower()
+            if current != "false":
+                out.append("enforce-secure-profile=false")
+                changed = True
+            else:
+                out.append(line)
+            continue
         out.append(line)
     if not seen_server_port:
         out.append(f"server-port={port}")
         changed = True
     if not seen_query_port:
         out.append(f"query.port={port}")
+        changed = True
+    if offline_mode and not seen_online_mode:
+        out.append("online-mode=false")
+        changed = True
+    if offline_mode and not seen_secure_profile:
+        out.append("enforce-secure-profile=false")
         changed = True
     if changed:
         props.write_text("\n".join(out) + "\n", encoding="utf-8")
@@ -247,10 +273,10 @@ def purge_old_files(path: Path, days: int):
 
 
 def read_essentials_artifacts():
-    if not ESSENTIALS_ARTIFACTS_FILE.exists():
+    if not ESSENTIALSX_LIST_FILE.exists():
         return []
     out = []
-    for raw in ESSENTIALS_ARTIFACTS_FILE.read_text(encoding="utf-8").splitlines():
+    for raw in ESSENTIALSX_LIST_FILE.read_text(encoding="utf-8").splitlines():
         v = raw.strip()
         if not v or v.startswith("#"):
             continue
@@ -370,37 +396,12 @@ def update_essentialsx(plugins_dir: Path):
     return updated, failed
 
 
-def load_modrinth_manifest():
-    if not MODRINTH_MANIFEST.exists():
-        return []
-    try:
-        data = json.loads(MODRINTH_MANIFEST.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    if isinstance(data, list):
-        return data
-    if isinstance(data, dict):
-        return data.get("plugins", [])
-    return []
-
-
 def load_modrinth_sources():
     sources = []
     seen = set()
 
-    for entry in load_modrinth_manifest():
-        if not isinstance(entry, dict):
-            continue
-        slug = entry.get("slug") or entry.get("id")
-        key = f"slug:{slug.lower()}" if slug else None
-        if key and key in seen:
-            continue
-        if key:
-            seen.add(key)
-        sources.append(entry)
-
-    for token in read_csv_or_newline_tokens(FETCH_LIST_FILE):
-        key = f"query:{token.lower()}"
+    for token in read_csv_or_newline_tokens(MODRINTH_LIST_FILE):
+        key = token.lower()
         if key in seen:
             continue
         seen.add(key)
@@ -514,7 +515,7 @@ def update_modrinth_plugins(plugins_dir: Path, mc_version: str):
     plugins = load_modrinth_sources()
     if not plugins:
         warn("No Modrinth source list configured; skipping.")
-        return [], [], []
+        return [], [], [], set()
 
     resolved = []
     failed = []
@@ -625,7 +626,16 @@ def update_modrinth_plugins(plugins_dir: Path, mc_version: str):
 
 
 def allowlist_tokens():
-    return read_csv_or_newline_tokens(ALLOWLIST_FILE)
+    return read_csv_or_newline_tokens(EXEMPT_LIST_FILE)
+
+
+def append_removed_list(entries):
+    if not entries:
+        return
+    REMOVED_LIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with REMOVED_LIST_FILE.open("a", encoding="utf-8") as f:
+        for entry in entries:
+            f.write(entry + "\n")
 
 
 def plugin_matches_allowlist(jar_name: str, patterns):
@@ -692,6 +702,7 @@ def check_unlisted_plugins(
 
     expected = set(managed_plugin_names)
     removed = []
+    removed_log_entries = []
 
     for jar in plugins_dir.glob("*.jar"):
         name = jar.name
@@ -707,8 +718,13 @@ def check_unlisted_plugins(
         dst = removed_dir / f"{stamp}-{name}"
         jar.rename(dst)
         removed.append(name)
+        removed_log_entries.append(f"{stamp},moved,{name}")
 
     purged = purge_old_files(removed_dir, retention_days) if purge_old_enabled else 0
+    if purged > 0:
+        stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        removed_log_entries.append(f"{stamp},purged_count,{purged}")
+    append_removed_list(removed_log_entries)
     return removed, purged
 
 
@@ -785,6 +801,18 @@ def start_server_loop(server_dir: Path, jar_name: str, ram_min: str, ram_max: st
     jar = server_dir / jar_name
     if not jar.exists():
         raise FileNotFoundError(f"Jar not found: {jar}")
+
+    def restart_countdown(seconds):
+        log("Auto restart is enabled")
+        sys.stdout.write(f"{icon_ok()} Restarting in: ")
+        sys.stdout.flush()
+        for n in range(seconds, 0, -1):
+            sys.stdout.write(f"{n}" + (" " if n > 1 else ""))
+            sys.stdout.flush()
+            time.sleep(1)
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
     while True:
         cmd = [
             "java",
@@ -799,14 +827,12 @@ def start_server_loop(server_dir: Path, jar_name: str, ram_min: str, ram_max: st
         if code == 0:
             log("Minecraft exited cleanly.")
             if auto_restart:
-                warn("AUTO_RESTART=true, restarting in 3s...")
-                time.sleep(3)
+                restart_countdown(5)
                 continue
             break
         err(f"Minecraft exited with code {code}.")
         if auto_restart:
-            warn("AUTO_RESTART=true, restarting in 5s...")
-            time.sleep(5)
+            restart_countdown(5)
             continue
         break
 
@@ -832,6 +858,7 @@ def main():
     update_modrinth = bool_env(cfg, "UPDATE_MODRINTH", True)
     remove_locks = bool_env(cfg, "REMOVE_LOCKS", True)
     purge_old_enabled = bool_env(cfg, "PURGE_OLD_FILES", True)
+    offline_mode = bool_env(cfg, "OFFLINE_MODE", True)
     no_run = args.no_run or bool_env(cfg, "NO_RUN", False)
     boot_motd = cfg.get("BOOT_MOTD", "Server is starting, please wait...")
     boot_timeout = int_env(cfg, "BOOT_MOTD_TIMEOUT", 300)
@@ -846,11 +873,11 @@ def main():
 
     divider()
     log("Checking Server Properties")
-    changed = update_server_properties(server_dir, port)
+    changed = update_server_properties(server_dir, port, offline_mode)
     if changed:
-        log(f"Port updated to {port}")
+        log(f"Server properties updated (port={port}, offline_mode={'true' if offline_mode else 'false'})")
     else:
-        log(f"Port OK ({port})")
+        log(f"Server properties OK (port={port}, offline_mode={'true' if offline_mode else 'false'})")
 
     divider()
     log("Checking Port Available")

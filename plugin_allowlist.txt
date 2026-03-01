@@ -1,7 +1,0 @@
-# Keep plugins matching these glob patterns even if they are not in modrinth_plugins.json.
-# Examples:
-# Geyser-*.jar
-# floodgate-*.jar
-azox-admin-log, azox-broadcast
-azox-bounty, azox-creative-watch
-azox-chat-watch
