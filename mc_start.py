@@ -39,15 +39,15 @@ def divider():
 
 
 def icon_ok():
-    return f"[{Ansi.GREEN}*{Ansi.RESET}]"
+    return f"{Ansi.GREEN}[*]{Ansi.RESET}"
 
 
 def icon_warn():
-    return f"[{Ansi.YELLOW}!{Ansi.RESET}]"
+    return f"{Ansi.RED}[!]{Ansi.RESET}"
 
 
 def icon_err():
-    return f"[{Ansi.RED}!{Ansi.RESET}]"
+    return f"{Ansi.RED}[!]{Ansi.RESET}"
 
 
 def log(msg):
@@ -63,10 +63,10 @@ def err(msg):
 
 
 def banner():
-    print(f"{Ansi.CYAN}╔══════════════════════════════════════╗{Ansi.RESET}")
-    print(f"{Ansi.CYAN}║         Azox Network Starting        ║{Ansi.RESET}")
-    print(f"{Ansi.CYAN}║            Please stand by           ║{Ansi.RESET}")
-    print(f"{Ansi.CYAN}╚══════════════════════════════════════╝{Ansi.RESET}")
+    print(f"{Ansi.RED}╔══════════════════════════════════════╗{Ansi.RESET}")
+    print(f"{Ansi.RED}║         Azox Network Starting        ║{Ansi.RESET}")
+    print(f"{Ansi.RED}║            Please stand by           ║{Ansi.RESET}")
+    print(f"{Ansi.RED}╚══════════════════════════════════════╝{Ansi.RESET}")
 
 
 def parse_env(path):
@@ -84,6 +84,38 @@ def parse_env(path):
             val = val[1:-1]
         cfg[key] = val
     return cfg
+
+
+def update_env_value(path: Path, key: str, value: str, quote=False):
+    new_line = f'{key}="{value}"' if quote else f"{key}={value}"
+    if not path.exists():
+        path.write_text(new_line + "\n", encoding="utf-8")
+        return
+    lines = path.read_text(encoding="utf-8").splitlines()
+    out = []
+    found = False
+    for line in lines:
+        if line.strip().startswith(f"{key}="):
+            out.append(new_line)
+            found = True
+        else:
+            out.append(line)
+    if not found:
+        out.append(new_line)
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+
+def remove_env_keys(path: Path, keys):
+    if not path.exists():
+        return
+    keys = set(keys)
+    out = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if any(stripped.startswith(f"{k}=") for k in keys):
+            continue
+        out.append(line)
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
 
 
 def bool_env(cfg, key, default=False):
@@ -183,17 +215,11 @@ def update_server_properties(server_dir: Path, port: int):
 def check_eula(server_dir: Path, enforce=True):
     eula = server_dir / "eula.txt"
     if not eula.exists():
-        if not enforce:
-            warn("eula.txt missing (CHECK_EULA=false), continuing.")
-            return True
         eula.write_text("eula=true\n", encoding="utf-8")
         log("EULA accepted by creating eula.txt")
         return True
     content = eula.read_text(encoding="utf-8")
     if "eula=true" in content:
-        return True
-    if not enforce:
-        warn("eula.txt is not accepted (CHECK_EULA=false), continuing.")
         return True
     eula.write_text("eula=true\n", encoding="utf-8")
     log("EULA updated to eula=true")
@@ -260,6 +286,31 @@ def parse_maven_timestamp_build(xml_text):
     return ts.group(1), bn.group(1)
 
 
+class ProgressLine:
+    def __init__(self, total, bar_length=22):
+        self.total = max(1, int(total))
+        self.bar_length = bar_length
+        self.count_width = len(str(self.total))
+        self.last_len = 0
+
+    def update(self, done, current=None):
+        done = max(0, min(int(done), self.total))
+        pct = int((done / self.total) * 100)
+        filled = int((done / self.total) * self.bar_length)
+        bar = "=" * filled + " " * (self.bar_length - filled)
+        line = f"{done:>{self.count_width}}/{self.total} [{bar}] {pct:3d}%"
+        if current:
+            line += f" | {current}"
+        pad = " " * max(0, self.last_len - len(line))
+        sys.stdout.write("\r" + line + pad)
+        sys.stdout.flush()
+        self.last_len = len(line)
+
+    def finish(self):
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+
 def update_essentialsx(plugins_dir: Path):
     artifacts = read_essentials_artifacts()
     if not artifacts:
@@ -269,7 +320,10 @@ def update_essentialsx(plugins_dir: Path):
     base_url = "https://repo.essentialsx.net/snapshots/net/essentialsx"
     updated = []
     failed = []
+    progress = ProgressLine(len(artifacts))
+    done = 0
     for artifact in artifacts:
+        progress.update(done, artifact)
         try:
             m1 = urllib.request.urlopen(
                 urllib.request.Request(
@@ -309,6 +363,10 @@ def update_essentialsx(plugins_dir: Path):
             updated.append(clean_name)
         except Exception as ex:
             failed.append(f"{artifact}: {ex}")
+        finally:
+            done += 1
+            progress.update(done, artifact)
+    progress.finish()
     return updated, failed
 
 
@@ -374,20 +432,35 @@ def resolve_modrinth_project(entry):
     )
     data = http_json(f"https://api.modrinth.com/v2/search?{params}", timeout=30)
     hits = data.get("hits", []) if isinstance(data, dict) else []
-    plugin_hits = [h for h in hits if str(h.get("project_type", "")).lower() == "plugin"]
-    if not plugin_hits:
+    # Modrinth server plugins are often tagged as "mod" projects with paper/spigot loaders.
+    server_hits = []
+    for h in hits:
+        ptype = str(h.get("project_type", "")).lower()
+        if ptype not in ("plugin", "mod"):
+            continue
+        cats = [str(c).lower() for c in h.get("categories", [])]
+        dloaders = [str(c).lower() for c in h.get("display_categories", [])]
+        merged = set(cats + dloaders)
+        if merged.intersection({"paper", "purpur", "spigot", "bukkit", "folia"}):
+            server_hits.append(h)
+            continue
+        # Keep as fallback if no explicit loader category is present.
+        if ptype == "plugin":
+            server_hits.append(h)
+
+    if not server_hits:
         return None, f"{query}: no plugin results"
 
     qn = query.lower()
     selected = None
-    for h in plugin_hits:
+    for h in server_hits:
         slug = str(h.get("slug", "")).lower()
         title = str(h.get("title", "")).lower()
         if qn == slug or qn == title:
             selected = h
             break
     if not selected:
-        selected = plugin_hits[0]
+        selected = server_hits[0]
 
     slug = selected.get("slug")
     title = selected.get("title")
@@ -473,35 +546,47 @@ def update_modrinth_plugins(plugins_dir: Path, mc_version: str):
     managed_names = []
     total = len(resolved)
     done = 0
-    print_progress(done, total)
+    progress = ProgressLine(total if total > 0 else 1)
+    if total == 0:
+        progress.update(1, "No resolved Modrinth projects")
+        progress.finish()
+        return updated, failed, managed_names, keep_keys
 
     for entry in resolved:
         slug = entry.get("slug")
+        progress.update(done, slug)
         try:
-            params = {
-                "game_versions": json.dumps([mc_version]),
-                "loaders": json.dumps(["purpur", "paper", "spigot", "bukkit"]),
-            }
-            q = urllib.parse.urlencode(params)
-            url = f"https://api.modrinth.com/v2/project/{slug}/version?{q}"
-            versions = http_json(url, timeout=30)
+            # 1) Purpur exact MC version 2) Paper exact MC version
+            # 3) Purpur any version 4) Paper any version 5) Spigot/Bukkit/Folia exact 6) same any
+            query_attempts = [
+                {"loaders": ["purpur"], "game_versions": [mc_version]},
+                {"loaders": ["paper"], "game_versions": [mc_version]},
+                {"loaders": ["purpur"]},
+                {"loaders": ["paper"]},
+                {"loaders": ["spigot", "bukkit", "folia"], "game_versions": [mc_version]},
+                {"loaders": ["spigot", "bukkit", "folia"]},
+            ]
+            versions = []
+            for attempt in query_attempts:
+                params = {"loaders": json.dumps(attempt["loaders"])}
+                if "game_versions" in attempt:
+                    params["game_versions"] = json.dumps(attempt["game_versions"])
+                q = urllib.parse.urlencode(params)
+                url = f"https://api.modrinth.com/v2/project/{slug}/version?{q}"
+                versions = http_json(url, timeout=30)
+                if versions:
+                    break
             if not versions:
                 failed.append(f"{slug}: no matching version for {mc_version}")
-                done += 1
-                print_progress(done, total)
                 continue
             latest = pick_latest_version(versions)
             file_name = resolve_filename(entry, latest)
             if not file_name:
                 failed.append(f"{slug}: no downloadable file")
-                done += 1
-                print_progress(done, total)
                 continue
             managed_names.append(file_name)
             target = plugins_dir / file_name
             if target.exists():
-                done += 1
-                print_progress(done, total)
                 continue
 
             files = latest.get("files", [])
@@ -517,8 +602,6 @@ def update_modrinth_plugins(plugins_dir: Path, mc_version: str):
                 managed_names[-1] = file_name
             if not download_url:
                 failed.append(f"{slug}: no file URL")
-                done += 1
-                print_progress(done, total)
                 continue
 
             download_file(download_url, target, timeout=60)
@@ -535,7 +618,8 @@ def update_modrinth_plugins(plugins_dir: Path, mc_version: str):
             failed.append(f"{slug}: {ex}")
         finally:
             done += 1
-            print_progress(done, total)
+            progress.update(done, slug)
+    progress.finish()
 
     return updated, failed, managed_names, keep_keys
 
@@ -598,6 +682,7 @@ def check_unlisted_plugins(
     essentials_artifacts,
     modrinth_keep_keys,
     retention_days: int,
+    purge_old_enabled: bool,
 ):
     ensure_dir(plugins_dir)
     removed_dir = plugins_dir / "removed-plugins"
@@ -623,14 +708,14 @@ def check_unlisted_plugins(
         jar.rename(dst)
         removed.append(name)
 
-    purged = purge_old_files(removed_dir, retention_days)
+    purged = purge_old_files(removed_dir, retention_days) if purge_old_enabled else 0
     return removed, purged
 
 
 def clear_session_locks(server_dir: Path):
     locks = list(server_dir.glob("**/session.lock"))
     if not locks:
-        warn("No session lock found")
+        log("No session lock found")
         return []
     log("Found session lock")
     removed = []
@@ -685,9 +770,12 @@ def update_purpur_if_needed(server_dir: Path, jar_name: str, enabled=True):
         if latest <= build:
             return jar_name, False, "Already on latest build"
         new_name = f"purpur-{version}-{latest}.jar"
-        url = f"https://api.purpurmc.org/v2/purpur/{version}/{latest}/download"
         dst = server_dir / new_name
-        download_file(url, dst, timeout=120)
+        if dst.exists():
+            return new_name, True, f"Using existing latest Purpur jar {new_name}"
+        if not dst.exists():
+            url = f"https://api.purpurmc.org/v2/purpur/{version}/{latest}/download"
+            download_file(url, dst, timeout=120)
         return new_name, True, f"Updated Purpur to {new_name}"
     except Exception as ex:
         return jar_name, False, f"Purpur update failed: {ex}"
@@ -729,16 +817,22 @@ def main():
     parser.add_argument("--no-run", action="store_true", help="Run checks only, do not launch Java server.")
     args = parser.parse_args()
 
-    cfg = parse_env(Path(args.config))
-    server_dir = Path(cfg.get("SERVER_DIR", "/opt/minecraft/sv")).expanduser()
-    jar_name = cfg.get("JAR_NAME", "purpur-1.21.11-2564.jar")
+    config_path = Path(args.config)
+    cfg = parse_env(config_path)
+    server_dir = Path(cfg.get("SERVER_DIR", "/home/ximotu/azox-scripts/sv")).expanduser()
+    jar_name = cfg.get("JAR_FILE", "purpur-1.21.11-2564.jar")
     port = int_env(cfg, "PORT", 25565)
     ram_min = cfg.get("RAM_MIN", "512M")
     ram_max = cfg.get("RAM_MAX", "4G")
     auto_restart = bool_env(cfg, "AUTO_RESTART", True)
     retention_days = int_env(cfg, "DELETED_MOD_RETENTION_DAYS", 7)
-    check_eula_enabled = bool_env(cfg, "CHECK_EULA", True)
+    enable_eula = bool_env(cfg, "ENABLE_EULA", bool_env(cfg, "CHECK_EULA", True))
     update_purpur = bool_env(cfg, "UPDATE_PURPUR", True)
+    update_essentials = bool_env(cfg, "UPDATE_ESSENTIALSX", True)
+    update_modrinth = bool_env(cfg, "UPDATE_MODRINTH", True)
+    remove_locks = bool_env(cfg, "REMOVE_LOCKS", True)
+    purge_old_enabled = bool_env(cfg, "PURGE_OLD_FILES", True)
+    no_run = args.no_run or bool_env(cfg, "NO_RUN", False)
     boot_motd = cfg.get("BOOT_MOTD", "Server is starting, please wait...")
     boot_timeout = int_env(cfg, "BOOT_MOTD_TIMEOUT", 300)
 
@@ -772,43 +866,52 @@ def main():
     boot_proc = start_boot_proxy(port, boot_motd, boot_timeout)
     log(f"Boot proxy started on port {port}")
 
-    divider()
-    log("Checking Purpur for updates")
-    jar_name, purpur_updated, purpur_msg = update_purpur_if_needed(server_dir, jar_name, enabled=update_purpur)
-    if purpur_updated:
-        log(purpur_msg)
-    else:
-        warn(purpur_msg)
+    if update_purpur:
+        divider()
+        log("Checking Purpur for updates")
+        jar_name, purpur_updated, purpur_msg = update_purpur_if_needed(server_dir, jar_name, enabled=update_purpur)
+        if purpur_updated:
+            log(purpur_msg)
+            update_env_value(config_path, "JAR_FILE", jar_name, quote=True)
+            remove_env_keys(config_path, ["JAR_NAME"])
+        else:
+            warn(purpur_msg)
 
-    divider()
-    log("Updating Modrinth Plugins")
-    mc_version, _build = parse_purpur_jar_name(jar_name)
-    if not mc_version:
-        mc_version = "1.21.11"
-    mod_updated, mod_failed, managed_names, modrinth_keep_keys = update_modrinth_plugins(plugins_dir, mc_version)
-    if mod_updated:
-        log(f"Updated {len(mod_updated)} plugin(s): {', '.join(mod_updated)}")
-    else:
-        log("Updated: All Plugins up to date. No updates required.")
-    if mod_failed:
-        warn(f"Modrinth warnings ({len(mod_failed)}): " + "; ".join(mod_failed))
+    managed_names = []
+    modrinth_keep_keys = set()
+    if update_modrinth:
+        divider()
+        log("Updating Modrinth Plugins")
+        mc_version, _build = parse_purpur_jar_name(jar_name)
+        if not mc_version:
+            mc_version = "1.21.11"
+        mod_updated, mod_failed, managed_names, modrinth_keep_keys = update_modrinth_plugins(plugins_dir, mc_version)
+        if mod_updated:
+            log(f"Updated {len(mod_updated)} plugin(s): {', '.join(mod_updated)}")
+        else:
+            log("Updated: All Plugins up to date. No updates required.")
+        if mod_failed:
+            warn(f"Modrinth warnings ({len(mod_failed)}): " + "; ".join(mod_failed))
 
-    divider()
-    log("Checking EssentialsX for updates")
     essentials_artifacts = read_essentials_artifacts()
-    ess_updated, ess_failed = update_essentialsx(plugins_dir)
-    if ess_updated:
-        for item in ess_updated:
-            log(f"Updated: {item}")
-    else:
-        log("EssentialsX: All configured artifacts are up to date.")
-    if ess_failed:
-        warn(f"EssentialsX warnings ({len(ess_failed)}): " + "; ".join(ess_failed))
+    if update_essentials:
+        divider()
+        log("Checking EssentialsX for updates")
+        ess_updated, ess_failed = update_essentialsx(plugins_dir)
+        if ess_updated:
+            for item in ess_updated:
+                log(f"Updated: {item}")
+        else:
+            log("EssentialsX: All configured artifacts are up to date.")
+        if ess_failed:
+            warn(f"EssentialsX warnings ({len(ess_failed)}): " + "; ".join(ess_failed))
 
-    divider()
-    log("Checking EULA")
-    if check_eula(server_dir, enforce=check_eula_enabled):
-        log("EULA OK")
+    if enable_eula:
+        divider()
+        log("Checking EULA")
+        if check_eula(server_dir, enforce=True):
+            log("EULA OK")
+            update_env_value(config_path, "ENABLE_EULA", "true", quote=False)
 
     divider()
     log("Checking for unlisted plugins")
@@ -818,27 +921,30 @@ def main():
         essentials_artifacts=essentials_artifacts,
         modrinth_keep_keys=modrinth_keep_keys,
         retention_days=retention_days,
+        purge_old_enabled=purge_old_enabled,
     )
     if removed:
         for item in removed:
             warn(f"Removed Plugin: {item} (moved to removed-plugins)")
     else:
         log("No unlisted plugins found.")
-    log(f"Purged {purged} deleted plugin(s) older than {retention_days} days")
+    if purge_old_enabled:
+        log(f"Purged {purged} deleted plugin(s) older than {retention_days} days")
 
-    divider()
-    log("Checking for session lock")
-    removed_locks = clear_session_locks(server_dir)
-    if removed_locks:
-        log("Removing session locks:")
-        for item in removed_locks:
-            print(f"    Removed: {item}")
+    if remove_locks:
+        divider()
+        log("Checking for session lock")
+        removed_locks = clear_session_locks(server_dir)
+        if removed_locks:
+            log("Removing session locks:")
+            for item in removed_locks:
+                print(f"    Removed: {item}")
 
     divider()
     stop_boot_proxy(boot_proc)
     log("Boot proxy stopped. Starting Minecraft server...")
 
-    if args.no_run:
+    if no_run:
         warn("--no-run enabled; launch skipped.")
         return 0
 

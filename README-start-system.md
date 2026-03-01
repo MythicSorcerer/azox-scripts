@@ -26,6 +26,16 @@ Use a custom config:
 ./start.sh --config /opt/minecraft/mc/start.env
 ```
 
+Config toggles:
+- `UPDATE_PURPUR=true|false`
+- `UPDATE_ESSENTIALSX=true|false`
+- `UPDATE_MODRINTH=true|false`
+- `REMOVE_LOCKS=true|false`
+- `ENABLE_EULA=true|false`
+- `PURGE_OLD_FILES=true|false`
+- `NO_RUN=true|false` (same effect as `--no-run`)
+- `JAR_FILE`
+
 ## Deployment Layout
 Expected:
 - `/opt/minecraft/mc` contains this script system.
