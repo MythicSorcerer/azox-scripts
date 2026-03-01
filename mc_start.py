@@ -767,15 +767,15 @@ def update_purpur_if_needed(server_dir: Path, jar_name: str, enabled=True):
     try:
         info = http_json(f"https://api.purpurmc.org/v2/purpur/{version}")
         latest = int(info.get("builds", {}).get("latest"))
-        if latest <= build:
+        configured_path = server_dir / jar_name
+        if latest <= build and configured_path.exists():
             return jar_name, False, "Already on latest build"
         new_name = f"purpur-{version}-{latest}.jar"
         dst = server_dir / new_name
         if dst.exists():
             return new_name, True, f"Using existing latest Purpur jar {new_name}"
-        if not dst.exists():
-            url = f"https://api.purpurmc.org/v2/purpur/{version}/{latest}/download"
-            download_file(url, dst, timeout=120)
+        url = f"https://api.purpurmc.org/v2/purpur/{version}/{latest}/download"
+        download_file(url, dst, timeout=120)
         return new_name, True, f"Updated Purpur to {new_name}"
     except Exception as ex:
         return jar_name, False, f"Purpur update failed: {ex}"
