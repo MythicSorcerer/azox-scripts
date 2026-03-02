@@ -1,2 +1,3 @@
 # Modrinth plugin names/slugs. Comma and/or newline separated.
 AuthMe Reloaded, AxGraves, AxiomPaper, Bluemap, Chunky, commandtimer, CoreProtect, FastAsyncWorldEdit, Geyser, GrimAC, instantrestock, InventoryRollbakcPlus, InvSee++, LuckPerms, MinerTrack, minimotd, multiverse-core, multiverse-inventories, multiverse-portals, multiverse-signportals, NVPlugin, openaudiomc, orbitalstrike, orebfuscator, plugmanx, skinsrestorer, string-dupers-return, supervanish, TAB, VaultUnlocked, WorlGuard, WorldGuardExtraFlags, nvplugin
+Superheros
